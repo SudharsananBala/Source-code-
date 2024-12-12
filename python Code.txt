@@ -1,0 +1,137 @@
+import pandas as pd
+from sqlalchemy import create_engine, func
+from sqlalchemy.orm import sessionmaker
+from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, request, jsonify
+import datetime
+import time
+import logging
+
+# Database connection URL
+DATABASE_URL = 'mysql+mysqlconnector://<username>:<password>@<host>/<sales_db>'
+
+# Setup logging for better traceability
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Setup SQLAlchemy engine and session
+engine = create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
+
+# APScheduler for background tasks
+scheduler = BackgroundScheduler()
+
+# Helper function to parse date range
+def parse_date_range(start_date, end_date):
+    try:
+        start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d') if start_date else None
+        end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d') if end_date else None
+        return start_date, end_date
+    except Exception as e:
+        raise ValueError(f"Invalid date format: {str(e)}")
+
+# Function to perform data refresh (load from CSV and refresh DB)
+def refresh_data():
+    logger.info("Starting data refresh process...")
+    
+    # Load the CSV file and transform data
+    df = pd.read_csv('sales_data.csv')
+    df['order_date'] = pd.to_datetime(df['Date of Sale'])
+    df['total_price'] = df['Quantity Sold'] * df['Unit Price'] * (1 - df['Discount'])
+
+    # Clear existing data before inserting new data (overwriting old data)
+    with engine.connect() as connection:
+        connection.execute("SET FOREIGN_KEY_CHECKS = 0;")
+        connection.execute("TRUNCATE TABLE order_items;")
+        connection.execute("TRUNCATE TABLE orders;")
+        connection.execute("TRUNCATE TABLE products;")
+        connection.execute("TRUNCATE TABLE customers;")
+        connection.execute("TRUNCATE TABLE regions;")
+        connection.execute("SET FOREIGN_KEY_CHECKS = 1;")
+    
+    # Insert fresh data into tables
+    insert_table(df, 'customers', ['Customer ID', 'Customer Name', 'Customer Email', 'Customer Address'], ['customer_id', 'customer_name', 'customer_email', 'customer_address'])
+    insert_table(df, 'products', ['Product ID', 'Product Name', 'Category', 'Unit Price'], ['product_id', 'product_name', 'category', 'unit_price'])
+    insert_table(df, 'regions', ['Region'], ['region_name'])
+    insert_table(df, 'orders', ['Order ID', 'Customer ID', 'Date of Sale', 'Payment Method', 'Region', 'total_price'], ['order_id', 'customer_id', 'order_date', 'payment_method', 'region_id', 'total_amount'])
+    insert_table(df, 'order_items', ['Order ID', 'Product ID', 'Quantity Sold', 'Discount', 'Shipping Cost', 'total_price'], ['order_id', 'product_id', 'quantity_sold', 'discount', 'shipping_cost', 'total_price'])
+    
+    logger.info("Data refresh completed successfully.")
+
+# Helper function to insert data into a specific table
+def insert_table(df, table_name, input_columns, output_columns):
+    data = df[input_columns].drop_duplicates()
+    data.columns = output_columns
+    data.to_sql(table_name, engine, if_exists='append', index=False)
+
+# Setup scheduler to refresh data every 24 hours
+scheduler.add_job(refresh_data, 'interval', hours=24)
+scheduler.start()
+
+# API endpoint to trigger data refresh
+@app.route('/refresh-data', methods=['POST'])
+def refresh_data_endpoint():
+    try:
+        refresh_data()
+        return jsonify({"message": "Data refresh triggered successfully."}), 200
+    except Exception as e:
+        logger.error(f"Error refreshing data: {str(e)}")
+        return jsonify({"message": f"Error refreshing data: {str(e)}"}), 500
+
+# API endpoint to calculate total revenue
+@app.route('/revenue', methods=['GET'])
+def calculate_total_revenue():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        start_date, end_date = parse_date_range(start_date, end_date)
+
+        session = Session()
+        query = session.query(func.sum('total_amount')).select_from('orders')
+        
+        if start_date:
+            query = query.filter('order_date' >= start_date)
+        if end_date:
+            query = query.filter('order_date' <= end_date)
+
+        total_revenue = query.scalar()
+        return jsonify({"total_revenue": total_revenue if total_revenue else 0}), 200
+    except Exception as e:
+        logger.error(f"Error calculating total revenue: {str(e)}")
+        return jsonify({"message": f"Error calculating total revenue: {str(e)}"}), 500
+
+# API endpoint to get top N products by quantity sold
+@app.route('/top-products', methods=['GET'])
+def top_products():
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        top_n = int(request.args.get('top_n', 10))  # Default to top 10 products
+        
+        start_date, end_date = parse_date_range(start_date, end_date)
+
+        session = Session()
+        query = session.query('product_name', func.sum('quantity_sold')) \
+            .join('order_items') \
+            .join('orders') \
+            .group_by('product_name') \
+            .order_by(func.sum('quantity_sold').desc())
+
+        if start_date:
+            query = query.filter('order_date' >= start_date)
+        if end_date:
+            query = query.filter('order_date' <= end_date)
+
+        top_products_data = query.limit(top_n).all()
+        return jsonify({"top_products": top_products_data}), 200
+    except Exception as e:
+        logger.error(f"Error retrieving top products: {str(e)}")
+        return jsonify({"message": f"Error retrieving top products: {str(e)}"}), 500
+
+# Run the Flask app
+if __name__ == '__main__':
+    app.run(debug=True, use_reloader=False)  # `use_reloader=False` to avoid double-running scheduler

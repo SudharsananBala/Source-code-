@@ -1,0 +1,53 @@
+CREATE DATABASE sales_db;
+USE sales_db;
+
+-- Create the 'customers' table
+CREATE TABLE customers (
+    customer_id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_name VARCHAR(255) NOT NULL,
+    customer_email VARCHAR(255) NOT NULL UNIQUE,
+    customer_address TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create the 'products' table
+CREATE TABLE products (
+    product_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_name VARCHAR(255) NOT NULL,
+    category VARCHAR(255) NOT NULL,
+    unit_price DECIMAL(10, 2) NOT NULL
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create the 'regions' table (optional, based on your needs)
+CREATE TABLE regions (
+    region_id INT AUTO_INCREMENT PRIMARY KEY,
+    region_name VARCHAR(255) NOT NULL UNIQUE
+);
+
+-- Create the 'orders' table
+CREATE TABLE orders (
+    order_id INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id INT NOT NULL,
+    order_date DATE NOT NULL,
+    payment_method ENUM('Credit Card', 'Debit Card', 'PayPal', 'Other') NOT NULL,
+    region_id INT NOT NULL,  -- Foreign key to regions
+    total_amount DECIMAL(10, 2) NOT NULL,  
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
+    FOREIGN KEY (region_id) REFERENCES regions(region_id)
+);
+
+-- Create the 'order_items' table (to link products with orders)
+CREATE TABLE order_items (
+    order_item_id INT AUTO_INCREMENT PRIMARY KEY,
+    order_id INT NOT NULL,
+    product_id INT NOT NULL,
+    quantity_sold INT NOT NULL,
+    discount DECIMAL(5, 2) DEFAULT 0,  -- Percentage discount (e.g., 0.10 for 10%)
+    shipping_cost DECIMAL(10, 2) DEFAULT 0,
+    total_price DECIMAL(10, 2) NOT NULL,  -- This is (quantity_sold * unit_price * (1 - discount))
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(order_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+);
